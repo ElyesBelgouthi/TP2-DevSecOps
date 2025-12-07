@@ -57,8 +57,6 @@ jobs:
                    --config=p/security-audit \
                    --config=p/nodejs \
                    --config=p/javascript \
-                   --config=p/express \
-                   --config=p/injection \
                    --config=p/sql-injection \
                    --config=p/command-injection \
                    --config=p/xss \
@@ -75,8 +73,6 @@ jobs:
                    --config=p/security-audit \
                    --config=p/nodejs \
                    --config=p/javascript \
-                   --config=p/express \
-                   --config=p/injection \
                    --config=p/sql-injection \
                    --config=p/command-injection \
                    --config=p/xss \

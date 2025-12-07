@@ -1,0 +1,38 @@
+rules:
+  - id: unprotected-admin-route
+    pattern-either:
+      - pattern: |
+          router.$METHOD('/admin', ...)
+      - pattern: |
+          router.$METHOD('/$PATH/admin', ...)
+      - pattern: |
+          router.$METHOD(/.*admin.*/, ...)
+    pattern-not-inside: |
+      router.$METHOD(..., $AUTH, ...)
+    message: Route admin détectée sans middleware d'authentification
+    languages: [javascript, typescript]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: "CWE-306: Missing Authentication for Critical Function"
+      owasp: "A01:2021 - Broken Access Control"
+
+  - id: missing-auth-check-in-handler
+    patterns:
+      - pattern-either:
+          - pattern: |
+              router.$METHOD('/admin', ($REQ, $RES) => { ... })
+          - pattern: |
+              router.$METHOD('/$PATH/admin', ($REQ, $RES) => { ... })
+      - pattern-not-inside: |
+          if ($REQ.headers.authorization) { ... }
+      - pattern-not-inside: |
+          if ($REQ.user) { ... }
+      - pattern-not-inside: |
+          if ($REQ.isAuthenticated()) { ... }
+    message: Route admin sans vérification d'authentification dans le handler
+    languages: [javascript, typescript]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: "CWE-306: Missing Authentication for Critical Function"

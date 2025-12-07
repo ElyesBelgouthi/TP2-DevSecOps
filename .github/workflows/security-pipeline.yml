@@ -50,7 +50,7 @@ jobs:
       - name: Installation Semgrep
         run: pip3 install semgrep
 
-      - name: Scan Semgrep complet
+      - name: Scan Semgrep avec règles personnalisées
         run: |
           semgrep --config=auto \
                    --config=p/owasp-top-ten \
@@ -62,6 +62,7 @@ jobs:
                    --config=p/xss \
                    --config=r/javascript.express.security \
                    --config=r/javascript.lang.security \
+                   --config=.semgrep/rules.yaml \
                    --json --output=semgrep-results.json \
                    src/ || true
 
@@ -78,6 +79,7 @@ jobs:
                    --config=p/xss \
                    --config=r/javascript.express.security \
                    --config=r/javascript.lang.security \
+                   --config=.semgrep/rules.yaml \
                    src/ || true
 
       - name: Vérification vulnérabilités

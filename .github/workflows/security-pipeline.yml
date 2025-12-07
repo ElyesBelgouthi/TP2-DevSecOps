@@ -37,49 +37,61 @@ jobs:
     name: SAST - Semgrep
     runs-on: ubuntu-latest
     needs: build-and-test
-    container:
-      image: semgrep/semgrep
     
     steps:
       - name: Checkout du code
         uses: actions/checkout@v4
 
-      - name: Scan Semgrep avec règles de sécurité
-        run: |
-          semgrep scan --config=auto \
-            --config=p/security-audit \
-            --config=p/owasp-top-ten \
-            --config=p/javascript \
-            --json --output=semgrep-results.json \
-            src/ || true
+      - name: Configuration Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
 
-      - name: Scan Semgrep avec affichage
-        run: |
-          semgrep scan --config=auto \
-            --config=p/security-audit \
-            --config=p/owasp-top-ten \
-            --config=p/javascript \
-            --severity=ERROR \
-            src/ || true
+      - name: Installation Semgrep
+        run: pip3 install semgrep
 
-      - name: Analyse des résultats
+      - name: Scan Semgrep - Règles de sécurité
         run: |
-          if [ -f semgrep-results.json ]; then
-            CRITICAL=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' semgrep-results.json)
-            HIGH=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' semgrep-results.json)
-            
-            echo "Semgrep SAST - Vulnérabilités CRITIQUES: $CRITICAL"
-            echo "Semgrep SAST - Vulnérabilités HAUTE: $HIGH"
-            
-            if [ "$CRITICAL" -gt 0 ]; then
-              echo ""
-              echo "ÉCHEC: Vulnérabilités critiques détectées"
-              echo ""
-              jq -r '.results[] | select(.extra.severity == "ERROR") | "[\(.extra.severity)] \(.check_id)\n  Message: \(.extra.message)\n  Fichier: \(.path):\(.start.line)\n"' semgrep-results.json
-              exit 1
-            fi
-          else
-            echo "ERREUR: Résultats Semgrep non trouvés"
+          semgrep --config=p/owasp-top-ten \
+                   --config=p/security-audit \
+                   --config=r/javascript.express.security \
+                   --config=r/javascript.lang.security \
+                   --severity=ERROR \
+                   --severity=WARNING \
+                   --json --output=semgrep-results.json \
+                   src/
+
+      - name: Affichage résultats Semgrep
+        run: |
+          echo "Résultats du scan Semgrep:"
+          semgrep --config=p/owasp-top-ten \
+                   --config=p/security-audit \
+                   --config=r/javascript.express.security \
+                   --severity=ERROR \
+                   src/
+
+      - name: Vérification vulnérabilités
+        run: |
+          ERRORS=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' semgrep-results.json)
+          WARNINGS=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' semgrep-results.json)
+          
+          echo ""
+          echo "=========================================="
+          echo "SEMGREP SAST - Résultats:"
+          echo "  Vulnérabilités CRITIQUES: $ERRORS"
+          echo "  Vulnérabilités AVERTISSEMENT: $WARNINGS"
+          echo "=========================================="
+          echo ""
+          
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "ÉCHEC: Vulnérabilités critiques détectées!"
+            echo ""
+            jq -r '.results[] | select(.extra.severity == "ERROR") | "[\(.extra.severity)] \(.check_id)\n  Message: \(.extra.message)\n  Fichier: \(.path) ligne \(.start.line)\n"' semgrep-results.json
+            exit 1
+          fi
+          
+          if [ "$WARNINGS" -gt 5 ]; then
+            echo "ÉCHEC: Trop de vulnérabilités d'avertissement détectées!"
             exit 1
           fi
 
@@ -90,8 +102,8 @@ jobs:
           name: sast-semgrep-results
           path: semgrep-results.json
 
-  sast-horusec:
-    name: SAST - Horusec
+  sast-custom-rules:
+    name: SAST - Règles Personnalisées
     runs-on: ubuntu-latest
     needs: build-and-test
     
@@ -99,143 +111,67 @@ jobs:
       - name: Checkout du code
         uses: actions/checkout@v4
 
-      - name: Scan Horusec
+      - name: Vérification SQL Injection manuelle
         run: |
-          docker run --rm \
-            -v $(pwd):/src \
-            horuszup/horusec-cli:latest horusec start \
-            -p /src \
-            -o json \
-            -O /src/horusec-results.json || true
-
-      - name: Affichage des résultats Horusec
-        run: |
-          docker run --rm \
-            -v $(pwd):/src \
-            horuszup/horusec-cli:latest horusec start \
-            -p /src || true
-
-      - name: Analyse des résultats Horusec
-        run: |
-          if [ -f horusec-results.json ]; then
-            HIGH=$(jq '[.analysisVulnerabilities[] | select(.severity == "HIGH" or .severity == "CRITICAL")] | length' horusec-results.json 2>/dev/null || echo "0")
-            
-            echo "Horusec SAST - Vulnérabilités HAUTE/CRITIQUES: $HIGH"
-            
-            if [ "$HIGH" -gt 0 ]; then
-              echo ""
-              echo "ÉCHEC: Vulnérabilités haute/critiques détectées par Horusec"
-              echo ""
-              jq -r '.analysisVulnerabilities[] | select(.severity == "HIGH" or .severity == "CRITICAL") | "[\(.severity)] \(.details)\n  Fichier: \(.file):\(.line)\n"' horusec-results.json || echo "Voir artifact pour détails"
-              exit 1
-            fi
-          else
-            echo "Horusec: Aucun résultat ou pas de vulnérabilités"
+          echo "Recherche de patterns SQL dangereux..."
+          
+          SQL_INJECTION_COUNT=$(grep -r "SELECT.*\${" src/ | wc -l || echo "0")
+          SQL_CONCAT_COUNT=$(grep -r "SELECT.*+.*req\." src/ | wc -l || echo "0")
+          SQL_TEMPLATE_COUNT=$(grep -r "\`SELECT.*'\${" src/ | wc -l || echo "0")
+          
+          echo "Injections SQL potentielles trouvées: $SQL_INJECTION_COUNT"
+          echo "Concaténations SQL dangereuses: $SQL_CONCAT_COUNT"
+          echo "Template strings SQL: $SQL_TEMPLATE_COUNT"
+          
+          TOTAL=$((SQL_INJECTION_COUNT + SQL_CONCAT_COUNT + SQL_TEMPLATE_COUNT))
+          
+          if [ "$TOTAL" -gt 0 ]; then
+            echo ""
+            echo "ÉCHEC: Patterns SQL dangereux détectés!"
+            echo ""
+            echo "Fichiers concernés:"
+            grep -rn "SELECT.*\${" src/ || true
+            grep -rn "\`SELECT.*'\${" src/ || true
+            exit 1
           fi
 
-      - name: Upload résultats Horusec
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: sast-horusec-results
-          path: horusec-results.json
-
-  sast-bearer:
-    name: SAST - Bearer
-    runs-on: ubuntu-latest
-    needs: build-and-test
-    
-    steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
-
-      - name: Scan Bearer
-        uses: bearer/bearer-action@v2
-        with:
-          format: json
-          output: bearer-results.json
-          severity: high,critical
-        continue-on-error: true
-
-      - name: Analyse résultats Bearer
-        if: always()
+      - name: Vérification Authentication manquante
         run: |
-          if [ -f bearer-results.json ]; then
-            CRITICAL=$(jq '[.high_findings[]?, .critical_findings[]?] | length' bearer-results.json 2>/dev/null || echo "0")
+          echo "Recherche de routes non protégées..."
+          
+          ADMIN_ROUTES=$(grep -r "router.get.*admin" src/ | wc -l || echo "0")
+          
+          if [ "$ADMIN_ROUTES" -gt 0 ]; then
+            echo "Routes admin trouvées: $ADMIN_ROUTES"
             
-            echo "Bearer SAST - Vulnérabilités CRITIQUE/HAUTE: $CRITICAL"
+            AUTH_CHECKS=$(grep -B5 -A5 "router.get.*admin" src/ | grep -c "authorization\|auth\|token" || echo "0")
             
-            if [ "$CRITICAL" -gt 0 ]; then
+            if [ "$AUTH_CHECKS" -eq 0 ]; then
               echo ""
-              echo "ÉCHEC: Vulnérabilités critiques détectées par Bearer"
+              echo "ÉCHEC: Routes admin sans vérification d'authentification!"
               echo ""
-              jq -r '[.high_findings[]?, .critical_findings[]?] | .[] | "[\(.severity)] \(.title)\n  Fichier: \(.filename):\(.line_number)\n"' bearer-results.json 2>/dev/null || echo "Voir artifact pour détails"
+              grep -rn "router.get.*admin" src/
               exit 1
             fi
-          else
-            echo "Bearer: Aucun résultat"
           fi
 
-      - name: Upload résultats Bearer
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: sast-bearer-results
-          path: bearer-results.json
-
-  sca-trivy:
-    name: SCA - Trivy
-    runs-on: ubuntu-latest
-    needs: build-and-test
-    
-    steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
-
-      - name: Scan Trivy pour vulnérabilités
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'json'
-          output: 'trivy-results.json'
-          severity: 'CRITICAL,HIGH'
-        continue-on-error: true
-
-      - name: Affichage résultats Trivy
+      - name: Vérification exec() et eval()
         run: |
-          docker run --rm \
-            -v $(pwd):/workspace \
-            aquasec/trivy:latest fs \
-            --severity CRITICAL,HIGH \
-            /workspace || true
-
-      - name: Analyse résultats Trivy
-        run: |
-          if [ -f trivy-results.json ]; then
-            CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' trivy-results.json 2>/dev/null || echo "0")
-            HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' trivy-results.json 2>/dev/null || echo "0")
-            
-            echo "Trivy SCA - Vulnérabilités CRITIQUES: $CRITICAL"
-            echo "Trivy SCA - Vulnérabilités HAUTE: $HIGH"
-            
-            if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
-              echo ""
-              echo "ÉCHEC: Vulnérabilités critiques/haute dans les dépendances"
-              echo ""
-              jq -r '.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL" or .Severity == "HIGH") | "[\(.Severity)] \(.VulnerabilityID): \(.Title)\n  Package: \(.PkgName) \(.InstalledVersion)\n"' trivy-results.json | head -50
-              exit 1
-            fi
-          else
-            echo "Trivy: Aucune vulnérabilité détectée"
+          echo "Recherche de fonctions dangereuses..."
+          
+          EXEC_COUNT=$(grep -r "exec(" src/ | grep -v "//.*exec" | wc -l || echo "0")
+          EVAL_COUNT=$(grep -r "eval(" src/ | grep -v "//.*eval" | wc -l || echo "0")
+          
+          echo "Utilisation de exec(): $EXEC_COUNT"
+          echo "Utilisation de eval(): $EVAL_COUNT"
+          
+          if [ "$EXEC_COUNT" -gt 0 ] || [ "$EVAL_COUNT" -gt 0 ]; then
+            echo ""
+            echo "ÉCHEC: Fonctions dangereuses détectées!"
+            echo ""
+            grep -rn "exec(\|eval(" src/ | grep -v "//"
+            exit 1
           fi
-
-      - name: Upload résultats Trivy
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: sca-trivy-results
-          path: trivy-results.json
 
   sca-npm-audit:
     name: SCA - npm audit
@@ -255,40 +191,39 @@ jobs:
       - name: Installation des dépendances
         run: npm ci
 
-      - name: Audit npm avec résultats JSON
+      - name: Audit npm
         run: |
           npm audit --json > npm-audit.json || true
+          npm audit
 
-      - name: Affichage audit npm
-        run: npm audit || true
-
-      - name: Analyse résultats npm audit
+      - name: Analyse résultats
         run: |
           CRITICAL=$(jq '.metadata.vulnerabilities.critical // 0' npm-audit.json)
           HIGH=$(jq '.metadata.vulnerabilities.high // 0' npm-audit.json)
           
-          echo "npm audit SCA - Vulnérabilités CRITIQUES: $CRITICAL"
-          echo "npm audit SCA - Vulnérabilités HAUTE: $HIGH"
+          echo ""
+          echo "=========================================="
+          echo "NPM AUDIT SCA - Résultats:"
+          echo "  Vulnérabilités CRITIQUES: $CRITICAL"
+          echo "  Vulnérabilités HAUTE: $HIGH"
+          echo "=========================================="
+          echo ""
           
           if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
-            echo ""
-            echo "ÉCHEC: Vulnérabilités critiques/haute dans les dépendances npm"
-            echo ""
-            jq -r '.vulnerabilities | to_entries[] | select(.value.severity == "critical" or .value.severity == "high") | "[\(.value.severity | ascii_upcase)] \(.key)\n  Via: \(.value.via[0].title // .value.via[0])\n"' npm-audit.json | head -50
+            echo "ÉCHEC: Vulnérabilités critiques dans les dépendances!"
+            jq -r '.vulnerabilities | to_entries[] | select(.value.severity == "critical" or .value.severity == "high") | "[\(.value.severity | ascii_upcase)] \(.key)\n  \(.value.via[0].title // .value.via[0])\n"' npm-audit.json
             exit 1
           fi
-          
-          echo "npm audit: Aucune vulnérabilité critique"
 
-      - name: Upload résultats npm audit
+      - name: Upload résultats
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: sca-npm-audit-results
           path: npm-audit.json
 
-  sca-osv-scanner:
-    name: SCA - OSV Scanner
+  sca-retire-js:
+    name: SCA - Retire.js
     runs-on: ubuntu-latest
     needs: build-and-test
     
@@ -296,37 +231,41 @@ jobs:
       - name: Checkout du code
         uses: actions/checkout@v4
 
-      - name: Scan OSV
-        uses: google/osv-scanner-action@v1
+      - name: Configuration Node.js
+        uses: actions/setup-node@v4
         with:
-          scan-args: |-
-            --format=json
-            --output=osv-results.json
-            ./
-        continue-on-error: true
+          node-version: '18'
 
-      - name: Analyse résultats OSV
-        if: always()
+      - name: Installation Retire.js
+        run: npm install -g retire
+
+      - name: Scan Retire.js
         run: |
-          if [ -f osv-results.json ]; then
-            VULNS=$(jq '[.results[]?.packages[]?.vulnerabilities[]?] | length' osv-results.json 2>/dev/null || echo "0")
+          retire --outputformat json --outputpath retire-results.json --path . || true
+          retire --path . || true
+
+      - name: Analyse résultats Retire.js
+        run: |
+          if [ -f retire-results.json ]; then
+            VULNS=$(jq '[.data[] | select(.results)] | length' retire-results.json 2>/dev/null || echo "0")
             
-            echo "OSV Scanner SCA - Vulnérabilités détectées: $VULNS"
+            echo ""
+            echo "=========================================="
+            echo "RETIRE.JS SCA - Résultats:"
+            echo "  Fichiers avec vulnérabilités: $VULNS"
+            echo "=========================================="
+            echo ""
             
             if [ "$VULNS" -gt 0 ]; then
-              echo ""
-              echo "ÉCHEC: Vulnérabilités détectées par OSV Scanner"
-              echo ""
-              jq -r '.results[]?.packages[]? | select(.vulnerabilities) | .package.name as $pkg | .vulnerabilities[] | "[\(.database_specific.severity // "HIGH")] \(.id)\n  Package: \($pkg)\n  Summary: \(.summary)\n"' osv-results.json | head -50
+              echo "ÉCHEC: Bibliothèques JavaScript vulnérables détectées!"
+              jq -r '.data[] | select(.results) | .file as $file | .results[] | "[\(.severity)] \(.component) \(.version)\n  Fichier: \($file)\n  \(.vulnerabilities[0].summary // "Vulnérabilité détectée")\n"' retire-results.json
               exit 1
             fi
-          else
-            echo "OSV Scanner: Aucune vulnérabilité détectée"
           fi
 
-      - name: Upload résultats OSV
+      - name: Upload résultats
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sca-osv-results
-          path: osv-results.json
+          name: sca-retirejs-results
+          path: retire-results.json

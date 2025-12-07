@@ -33,8 +33,8 @@ jobs:
           name: coverage-report
           path: coverage/
 
-  sast-nodejsscan:
-    name: SAST - NodeJsScan
+  sast-snyk-code:
+    name: SAST - Snyk Code
     runs-on: ubuntu-latest
     needs: build-and-test
     
@@ -42,28 +42,87 @@ jobs:
       - name: Checkout du code
         uses: actions/checkout@v4
 
-      - name: Scan NodeJsScan
-        uses: ajinabraham/njsscan-action@master
-        with:
-          args: '--sarif --output results.sarif src/'
+      - name: Installation de Snyk CLI
+        run: npm install -g snyk
 
-      - name: Upload résultats SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: results.sarif
+      - name: Authentification Snyk
+        run: snyk auth ${{ secrets.SNYK_TOKEN }}
 
-      - name: Vérification vulnérabilités critiques
+      - name: Scan SAST avec Snyk Code
         run: |
-          if [ -f results.sarif ]; then
-            CRITICAL=$(jq '[.runs[].results[] | select(.level == "error")] | length' results.sarif)
-            echo "Vulnérabilités critiques: $CRITICAL"
+          snyk code test --json > snyk-code-results.json || true
+          snyk code test --severity-threshold=high || SNYK_EXIT_CODE=$?
+          
+          if [ ! -z "$SNYK_EXIT_CODE" ] && [ "$SNYK_EXIT_CODE" -ne 0 ]; then
+            echo "ÉCHEC: Vulnérabilités détectées par Snyk Code"
+            exit 1
+          fi
+
+      - name: Analyse des résultats Snyk Code
+        if: always()
+        run: |
+          if [ -f snyk-code-results.json ]; then
+            echo "Analyse des résultats Snyk Code"
             
-            if [ "$CRITICAL" -gt 0 ]; then
-              echo "ÉCHEC: Vulnérabilités critiques détectées"
-              exit 1
+            HIGH=$(jq '[.runs[0].results[] | select(.level == "error")] | length' snyk-code-results.json 2>/dev/null || echo "0")
+            MEDIUM=$(jq '[.runs[0].results[] | select(.level == "warning")] | length' snyk-code-results.json 2>/dev/null || echo "0")
+            
+            echo "Vulnérabilités HAUTE: $HIGH"
+            echo "Vulnérabilités MOYENNE: $MEDIUM"
+            
+            if [ "$HIGH" -gt 0 ]; then
+              echo "Détails des vulnérabilités critiques:"
+              jq -r '.runs[0].results[] | select(.level == "error") | "  - \(.message.text) dans \(.locations[0].physicalLocation.artifactLocation.uri)"' snyk-code-results.json 2>/dev/null || echo "Voir les détails dans l'artifact"
             fi
           fi
+
+      - name: Upload résultats Snyk Code
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-snyk-code-results
+          path: snyk-code-results.json
+
+  sca-snyk-dependencies:
+    name: SCA - Snyk Open Source
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Configuration Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Installation des dépendances
+        run: npm ci
+
+      - name: Installation de Snyk CLI
+        run: npm install -g snyk
+
+      - name: Authentification Snyk
+        run: snyk auth ${{ secrets.SNYK_TOKEN }}
+
+      - name: Scan des dépendances avec Snyk
+        run: |
+          snyk test --json > snyk-dependencies-results.json || true
+          snyk test --severity-threshold=high || SNYK_EXIT_CODE=$?
+          
+          if [ ! -z "$SNYK_EXIT_CODE" ] && [ "$SNYK_EXIT_CODE" -ne 0 ]; then
+            echo "ÉCHEC: Vulnérabilités dans les dépendances détectées par Snyk"
+            exit 1
+          fi
+
+      - name: Upload résultats Snyk Dependencies
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sca-snyk-results
+          path: snyk-dependencies-results.json
 
   sca-npm-audit:
     name: SCA - npm audit
@@ -83,41 +142,27 @@ jobs:
       - name: Installation des dépendances
         run: npm ci
 
-      - name: Audit de sécurité
+      - name: Audit de sécurité npm
         run: |
           npm audit --json > npm-audit.json || true
-          npm audit
+          npm audit || true
 
-      - name: Vérification vulnérabilités
+      - name: Vérification vulnérabilités npm
         run: |
           CRITICAL=$(jq '.metadata.vulnerabilities.critical // 0' npm-audit.json)
           HIGH=$(jq '.metadata.vulnerabilities.high // 0' npm-audit.json)
           
-          echo "Vulnérabilités CRITIQUES: $CRITICAL"
-          echo "Vulnérabilités HAUTE: $HIGH"
+          echo "npm audit - Vulnérabilités CRITIQUES: $CRITICAL"
+          echo "npm audit - Vulnérabilités HAUTE: $HIGH"
           
           if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
             echo "ÉCHEC: Vulnérabilités critiques/haute dans les dépendances"
             exit 1
           fi
 
-      - name: Upload résultats SCA
+      - name: Upload résultats npm audit
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sca-results
+          name: sca-npm-audit-results
           path: npm-audit.json
-
-
-  security-gate:
-    name: Gate de Sécurité
-    runs-on: ubuntu-latest
-    needs: [sast-nodejsscan, sca-npm-audit]
-    
-    steps:
-      - name: Validation finale
-        run: |
-          echo "Tous les scans de sécurité terminés avec succès"
-          echo "SAST ESLint: OK"
-          echo "SAST NodeJsScan: OK"
-          echo "SCA npm audit: OK"

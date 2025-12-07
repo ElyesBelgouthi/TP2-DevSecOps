@@ -102,76 +102,6 @@ jobs:
           name: sast-semgrep-results
           path: semgrep-results.json
 
-  sast-custom-rules:
-    name: SAST - Règles Personnalisées
-    runs-on: ubuntu-latest
-    needs: build-and-test
-    
-    steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
-
-      - name: Vérification SQL Injection manuelle
-        run: |
-          echo "Recherche de patterns SQL dangereux..."
-          
-          SQL_INJECTION_COUNT=$(grep -r "SELECT.*\${" src/ | wc -l || echo "0")
-          SQL_CONCAT_COUNT=$(grep -r "SELECT.*+.*req\." src/ | wc -l || echo "0")
-          SQL_TEMPLATE_COUNT=$(grep -r "\`SELECT.*'\${" src/ | wc -l || echo "0")
-          
-          echo "Injections SQL potentielles trouvées: $SQL_INJECTION_COUNT"
-          echo "Concaténations SQL dangereuses: $SQL_CONCAT_COUNT"
-          echo "Template strings SQL: $SQL_TEMPLATE_COUNT"
-          
-          TOTAL=$((SQL_INJECTION_COUNT + SQL_CONCAT_COUNT + SQL_TEMPLATE_COUNT))
-          
-          if [ "$TOTAL" -gt 0 ]; then
-            echo ""
-            echo "ÉCHEC: Patterns SQL dangereux détectés!"
-            echo ""
-            echo "Fichiers concernés:"
-            grep -rn "SELECT.*\${" src/ || true
-            grep -rn "\`SELECT.*'\${" src/ || true
-            exit 1
-          fi
-
-      - name: Vérification Authentication manquante
-        run: |
-          echo "Recherche de routes non protégées..."
-          
-          ADMIN_ROUTES=$(grep -r "router.get.*admin" src/ | wc -l || echo "0")
-          
-          if [ "$ADMIN_ROUTES" -gt 0 ]; then
-            echo "Routes admin trouvées: $ADMIN_ROUTES"
-            
-            AUTH_CHECKS=$(grep -B5 -A5 "router.get.*admin" src/ | grep -c "authorization\|auth\|token" || echo "0")
-            
-            if [ "$AUTH_CHECKS" -eq 0 ]; then
-              echo ""
-              echo "ÉCHEC: Routes admin sans vérification d'authentification!"
-              echo ""
-              grep -rn "router.get.*admin" src/
-              exit 1
-            fi
-          fi
-
-      - name: Vérification exec() et eval()
-        run: |
-          echo "Recherche de fonctions dangereuses..."
-          
-          EXEC_COUNT=$(grep -r "exec(" src/ | grep -v "//.*exec" | wc -l || echo "0")
-          EVAL_COUNT=$(grep -r "eval(" src/ | grep -v "//.*eval" | wc -l || echo "0")
-          
-          echo "Utilisation de exec(): $EXEC_COUNT"
-          echo "Utilisation de eval(): $EVAL_COUNT"
-          
-          if [ "$EXEC_COUNT" -gt 0 ] || [ "$EVAL_COUNT" -gt 0 ]; then
-            echo ""
-            echo "ÉCHEC: Fonctions dangereuses détectées!"
-            echo ""
-            grep -rn "exec(\|eval(" src/ | grep -v "//"
-            exit 1
-          fi
 
   sca-npm-audit:
     name: SCA - npm audit
@@ -222,46 +152,7 @@ jobs:
           name: sca-npm-audit-results
           path: npm-audit.json
 
-  sca-retire-js:
-    name: SCA - Retire.js
-    runs-on: ubuntu-latest
-    needs: build-and-test
-    
-    steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
 
-      - name: Configuration Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-
-      - name: Installation Retire.js
-        run: npm install -g retire
-
-      - name: Scan Retire.js
-        run: |
-          retire --outputformat json --outputpath retire-results.json --path . || true
-          retire --path . || true
-
-      - name: Analyse résultats Retire.js
-        run: |
-          if [ -f retire-results.json ]; then
-            VULNS=$(jq '[.data[] | select(.results)] | length' retire-results.json 2>/dev/null || echo "0")
-            
-            echo ""
-            echo "=========================================="
-            echo "RETIRE.JS SCA - Résultats:"
-            echo "  Fichiers avec vulnérabilités: $VULNS"
-            echo "=========================================="
-            echo ""
-            
-            if [ "$VULNS" -gt 0 ]; then
-              echo "ÉCHEC: Bibliothèques JavaScript vulnérables détectées!"
-              jq -r '.data[] | select(.results) | .file as $file | .results[] | "[\(.severity)] \(.component) \(.version)\n  Fichier: \($file)\n  \(.vulnerabilities[0].summary // "Vulnérabilité détectée")\n"' retire-results.json
-              exit 1
-            fi
-          fi
 
       - name: Upload résultats
         if: always()

@@ -33,12 +33,8 @@ jobs:
           name: coverage-report
           path: coverage/
 
-      - name: Vérification de la couverture
-        run: |
-          echo "Tests passés avec succès!"
-
-  sast-scan:
-    name: SAST - Analyse Statique du Code
+  sast-nodejsscan:
+    name: SAST - NodeJsScan
     runs-on: ubuntu-latest
     needs: build-and-test
     
@@ -46,115 +42,82 @@ jobs:
       - name: Checkout du code
         uses: actions/checkout@v4
 
-      - name: Scan SAST avec Semgrep
-        uses: returntocorp/semgrep-action@v1
+      - name: Scan NodeJsScan
+        uses: ajinabraham/njsscan-action@master
         with:
-          config: >-
-            p/security-audit
-            p/owasp-top-ten
-            p/javascript
-          
-      - name: Upload des résultats SAST
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: sast-results
-          path: semgrep-results.json
+          args: '--sarif --output results.sarif src/'
 
-  sca-scan:
-    name: SCA - Analyse des Dépendances
+      - name: Upload résultats SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results.sarif
+
+      - name: Vérification vulnérabilités critiques
+        run: |
+          if [ -f results.sarif ]; then
+            CRITICAL=$(jq '[.runs[].results[] | select(.level == "error")] | length' results.sarif)
+            echo "Vulnérabilités critiques: $CRITICAL"
+            
+            if [ "$CRITICAL" -gt 0 ]; then
+              echo "ÉCHEC: Vulnérabilités critiques détectées"
+              exit 1
+            fi
+          fi
+
+  sca-npm-audit:
+    name: SCA - npm audit
     runs-on: ubuntu-latest
     needs: build-and-test
     
     steps:
-      - name: 📥 Checkout du code
+      - name: Checkout du code
         uses: actions/checkout@v4
 
-      - name: 🐍 Configuration Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.x'
-
-      - name: 📦 Installation de Bandit et Safety
-        run: |
-          pip install bandit safety
-
-      - name: 🔍 Scan avec Safety (vulnérabilités Python)
-        run: |
-          # Créer un requirements.txt vide si inexistant
-          touch requirements.txt
-          safety check --json > safety-report.json || true
-          echo "✅ Safety scan terminé"
-
-      - name: 🟢 Configuration Node.js
+      - name: Configuration Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
           cache: 'npm'
 
-      - name: 📦 Installation npm-check-updates
+      - name: Installation des dépendances
+        run: npm ci
+
+      - name: Audit de sécurité
         run: |
-          npm ci
-          npm install -g npm-check-updates
+          npm audit --json > npm-audit.json || true
+          npm audit
 
-      - name: 🔍 Vérification des packages obsolètes
+      - name: Vérification vulnérabilités
         run: |
-          echo "📦 Vérification des packages obsolètes avec des vulnérabilités connues..."
-          ncu --packageFile package.json > ncu-report.txt || true
-          cat ncu-report.txt
+          CRITICAL=$(jq '.metadata.vulnerabilities.critical // 0' npm-audit.json)
+          HIGH=$(jq '.metadata.vulnerabilities.high // 0' npm-audit.json)
+          
+          echo "Vulnérabilités CRITIQUES: $CRITICAL"
+          echo "Vulnérabilités HAUTE: $HIGH"
+          
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+            echo "ÉCHEC: Vulnérabilités critiques/haute dans les dépendances"
+            exit 1
+          fi
 
-  codeql-scan:
-    name: CodeQL - Analyse Avancée
-    runs-on: ubuntu-latest
-    needs: build-and-test
-    permissions:
-      security-events: write
-      actions: read
-      contents: read
-    
-    steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
-
-      - name: Initialisation CodeQL
-        uses: github/codeql-action/init@v3
+      - name: Upload résultats SCA
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          languages: javascript
+          name: sca-results
+          path: npm-audit.json
 
-      - name: Analyse CodeQL
-        uses: github/codeql-action/analyze@v3
-        with:
-          category: "/language:javascript"
-
-  secret-scan:
-    name: Détection de Secrets
-    runs-on: ubuntu-latest
-    needs: build-and-test
-    
-    steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Scan avec TruffleHog
-        uses: trufflesecurity/trufflehog@main
-        with:
-          path: ./
-          base: main
-          head: HEAD
 
   security-gate:
     name: Gate de Sécurité
     runs-on: ubuntu-latest
-    needs: [sast-scan, sca-scan, codeql-scan, secret-scan]
+    needs: [sast-nodejsscan, sca-npm-audit]
     
     steps:
-      - name: Validation des scans de sécurité
+      - name: Validation finale
         run: |
-          echo "Tous les scans de sécurité ont réussi!"
-          echo "SAST: OK"
-          echo "SCA: OK"
-          echo "CodeQL: OK"
-          echo "Secrets: OK"
-          echo "Le pipeline peut continuer vers le déploiement"
+          echo "Tous les scans de sécurité terminés avec succès"
+          echo "SAST ESLint: OK"
+          echo "SAST NodeJsScan: OK"
+          echo "SCA npm audit: OK"

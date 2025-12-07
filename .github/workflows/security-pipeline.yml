@@ -36,3 +36,112 @@ jobs:
       - name: Vérification de la couverture
         run: |
           echo "Tests passés avec succès!"
+
+  sast-scan:
+    name: SAST - Analyse Statique du Code
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Scan SAST avec Semgrep
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/owasp-top-ten
+            p/javascript
+          
+      - name: Upload des résultats SAST
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-results
+          path: semgrep-results.json
+
+  sca-scan:
+    name: SCA - Analyse des Dépendances
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Configuration Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Installation des dépendances
+        run: npm ci
+
+      - name: Audit de sécurité des dépendances
+        run: |
+          npm audit --audit-level=high --json > npm-audit-results.json || true
+          npm audit --audit-level=high
+
+      - name: Upload des résultats SCA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sca-results
+          path: npm-audit-results.json
+
+  codeql-scan:
+    name: CodeQL - Analyse Avancée
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Initialisation CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript
+
+      - name: Analyse CodeQL
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:javascript"
+
+  secret-scan:
+    name: Détection de Secrets
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan avec TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+
+  security-gate:
+    name: Gate de Sécurité
+    runs-on: ubuntu-latest
+    needs: [sast-scan, sca-scan, codeql-scan, secret-scan]
+    
+    steps:
+      - name: Validation des scans de sécurité
+        run: |
+          echo "Tous les scans de sécurité ont réussi!"
+          echo "SAST: OK"
+          echo "SCA: OK"
+          echo "CodeQL: OK"
+          echo "Secrets: OK"
+          echo "Le pipeline peut continuer vers le déploiement"

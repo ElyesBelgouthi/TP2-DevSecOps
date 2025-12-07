@@ -52,7 +52,6 @@ router.get('/admin', requireAuth, (req, res) => {
   });
 });
 
-// Route publique
 router.get('/', (req, res) => {
   db.all('SELECT id, name, email FROM users', [], (err, rows) => {
     if (err) {

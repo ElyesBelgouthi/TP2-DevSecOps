@@ -170,5 +170,3 @@ jobs:
         with:
           name: sca-npm-audit-results
           path: npm-audit.json
-
-  

@@ -50,50 +50,72 @@ jobs:
       - name: Installation Semgrep
         run: pip3 install semgrep
 
-      - name: Scan Semgrep - Règles de sécurité
+      - name: Scan Semgrep complet
         run: |
-          semgrep --config=p/owasp-top-ten \
+          semgrep --config=auto \
+                   --config=p/owasp-top-ten \
                    --config=p/security-audit \
+                   --config=p/nodejs \
+                   --config=p/javascript \
+                   --config=p/express \
+                   --config=p/injection \
+                   --config=p/sql-injection \
+                   --config=p/command-injection \
+                   --config=p/xss \
                    --config=r/javascript.express.security \
                    --config=r/javascript.lang.security \
-                   --severity=ERROR \
-                   --severity=WARNING \
                    --json --output=semgrep-results.json \
-                   src/
+                   src/ || true
 
       - name: Affichage résultats Semgrep
         run: |
-          echo "Résultats du scan Semgrep:"
-          semgrep --config=p/owasp-top-ten \
+          echo "Résultats détaillés du scan Semgrep:"
+          semgrep --config=auto \
+                   --config=p/owasp-top-ten \
                    --config=p/security-audit \
+                   --config=p/nodejs \
+                   --config=p/javascript \
+                   --config=p/express \
+                   --config=p/injection \
+                   --config=p/sql-injection \
+                   --config=p/command-injection \
+                   --config=p/xss \
                    --config=r/javascript.express.security \
-                   --severity=ERROR \
-                   src/
+                   --config=r/javascript.lang.security \
+                   src/ || true
 
       - name: Vérification vulnérabilités
         run: |
           ERRORS=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' semgrep-results.json)
           WARNINGS=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' semgrep-results.json)
+          INFO=$(jq '[.results[] | select(.extra.severity == "INFO")] | length' semgrep-results.json)
           
           echo ""
           echo "=========================================="
           echo "SEMGREP SAST - Résultats:"
-          echo "  Vulnérabilités CRITIQUES: $ERRORS"
-          echo "  Vulnérabilités AVERTISSEMENT: $WARNINGS"
+          echo "  Vulnérabilités CRITIQUES (ERROR): $ERRORS"
+          echo "  Vulnérabilités HAUTE (WARNING): $WARNINGS"
+          echo "  Vulnérabilités INFO: $INFO"
           echo "=========================================="
           echo ""
           
           if [ "$ERRORS" -gt 0 ]; then
             echo "ÉCHEC: Vulnérabilités critiques détectées!"
             echo ""
-            jq -r '.results[] | select(.extra.severity == "ERROR") | "[\(.extra.severity)] \(.check_id)\n  Message: \(.extra.message)\n  Fichier: \(.path) ligne \(.start.line)\n"' semgrep-results.json
+            echo "Détails des vulnérabilités critiques:"
+            jq -r '.results[] | select(.extra.severity == "ERROR") | "[\(.extra.severity)] \(.check_id)\n  Message: \(.extra.message)\n  Fichier: \(.path) ligne \(.start.line)\n  Code: \(.extra.lines)\n"' semgrep-results.json
             exit 1
           fi
           
-          if [ "$WARNINGS" -gt 5 ]; then
-            echo "ÉCHEC: Trop de vulnérabilités d'avertissement détectées!"
+          if [ "$WARNINGS" -gt 0 ]; then
+            echo "AVERTISSEMENT: Vulnérabilités haute sévérité détectées!"
+            echo ""
+            echo "Détails des vulnérabilités haute sévérité:"
+            jq -r '.results[] | select(.extra.severity == "WARNING") | "[\(.extra.severity)] \(.check_id)\n  Message: \(.extra.message)\n  Fichier: \(.path) ligne \(.start.line)\n"' semgrep-results.json
             exit 1
           fi
+          
+          echo "Aucune vulnérabilité critique ou haute détectée"
 
       - name: Upload résultats SAST
         if: always()
@@ -101,7 +123,6 @@ jobs:
         with:
           name: sast-semgrep-results
           path: semgrep-results.json
-
 
   sca-npm-audit:
     name: SCA - npm audit
@@ -124,7 +145,7 @@ jobs:
       - name: Audit npm
         run: |
           npm audit --json > npm-audit.json || true
-          npm audit
+          npm audit || true
 
       - name: Analyse résultats
         run: |
@@ -151,12 +172,3 @@ jobs:
         with:
           name: sca-npm-audit-results
           path: npm-audit.json
-
-
-
-      - name: Upload résultats
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: sca-retirejs-results
-          path: retire-results.json

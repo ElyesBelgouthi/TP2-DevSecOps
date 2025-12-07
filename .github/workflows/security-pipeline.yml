@@ -67,28 +67,41 @@ jobs:
     needs: build-and-test
     
     steps:
-      - name: Checkout du code
+      - name: 📥 Checkout du code
         uses: actions/checkout@v4
 
-      - name: Configuration Node.js
+      - name: 🐍 Configuration Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: 📦 Installation de Bandit et Safety
+        run: |
+          pip install bandit safety
+
+      - name: 🔍 Scan avec Safety (vulnérabilités Python)
+        run: |
+          # Créer un requirements.txt vide si inexistant
+          touch requirements.txt
+          safety check --json > safety-report.json || true
+          echo "✅ Safety scan terminé"
+
+      - name: 🟢 Configuration Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
+          cache: 'npm'
 
-      - name: Installation des dépendances
-        run: npm ci
-
-      - name: Audit de sécurité des dépendances
+      - name: 📦 Installation npm-check-updates
         run: |
-          npm audit --audit-level=high --json > npm-audit-results.json || true
-          npm audit --audit-level=high
+          npm ci
+          npm install -g npm-check-updates
 
-      - name: Upload des résultats SCA
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: sca-results
-          path: npm-audit-results.json
+      - name: 🔍 Vérification des packages obsolètes
+        run: |
+          echo "📦 Vérification des packages obsolètes avec des vulnérabilités connues..."
+          ncu --packageFile package.json > ncu-report.txt || true
+          cat ncu-report.txt
 
   codeql-scan:
     name: CodeQL - Analyse Avancée

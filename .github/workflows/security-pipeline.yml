@@ -122,8 +122,8 @@ jobs:
           name: sast-semgrep-results
           path: semgrep-results.json
 
-  sca-npm-audit:
-    name: SCA - npm audit
+  sca-owasp-dependency-check:
+    name: SCA - OWASP Dependency-Check
     runs-on: ubuntu-latest
     needs: build-and-test
     
@@ -140,33 +140,65 @@ jobs:
       - name: Installation des dépendances
         run: npm ci
 
-      - name: Audit npm
-        run: |
-          npm audit --json > npm-audit.json || true
-          npm audit || true
+      - name: Scan OWASP Dependency-Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'secure-app'
+          path: '.'
+          format: 'ALL'
+          args: >
+            --enableRetired
+            --enableExperimental
+            --failOnCVSS 7
+            --suppression suppression.xml
 
-      - name: Analyse résultats
+      - name: Analyse des résultats
+        if: always()
         run: |
-          CRITICAL=$(jq '.metadata.vulnerabilities.critical // 0' npm-audit.json)
-          HIGH=$(jq '.metadata.vulnerabilities.high // 0' npm-audit.json)
-          
-          echo ""
-          echo "=========================================="
-          echo "NPM AUDIT SCA - Résultats:"
-          echo "  Vulnérabilités CRITIQUES: $CRITICAL"
-          echo "  Vulnérabilités HAUTE: $HIGH"
-          echo "=========================================="
-          echo ""
-          
-          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
-            echo "ÉCHEC: Vulnérabilités critiques dans les dépendances!"
-            jq -r '.vulnerabilities | to_entries[] | select(.value.severity == "critical" or .value.severity == "high") | "[\(.value.severity | ascii_upcase)] \(.key)\n  \(.value.via[0].title // .value.via[0])\n"' npm-audit.json
-            exit 1
+          if [ -f dependency-check-report.json ]; then
+            CRITICAL=$(jq '[.dependencies[].vulnerabilities[]? | select(.severity == "CRITICAL")] | length' dependency-check-report.json 2>/dev/null || echo "0")
+            HIGH=$(jq '[.dependencies[].vulnerabilities[]? | select(.severity == "HIGH")] | length' dependency-check-report.json 2>/dev/null || echo "0")
+            MEDIUM=$(jq '[.dependencies[].vulnerabilities[]? | select(.severity == "MEDIUM")] | length' dependency-check-report.json 2>/dev/null || echo "0")
+            
+            echo ""
+            echo "=========================================="
+            echo "OWASP DEPENDENCY-CHECK SCA - Résultats:"
+            echo "  Vulnérabilités CRITIQUES: $CRITICAL"
+            echo "  Vulnérabilités HAUTE: $HIGH"
+            echo "  Vulnérabilités MOYENNE: $MEDIUM"
+            echo "=========================================="
+            echo ""
+            
+            if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+              echo "ÉCHEC: Vulnérabilités critiques/haute dans les dépendances!"
+              echo ""
+              echo "Détails des vulnérabilités critiques et haute:"
+              jq -r '.dependencies[] | select(.vulnerabilities) | .fileName as $file | .vulnerabilities[] | select(.severity == "CRITICAL" or .severity == "HIGH") | "[\(.severity)] \(.name)\n  Description: \(.description)\n  Fichier: \($file)\n  CVSS: \(.cvssv3.baseScore // .cvssv2.score // "N/A")\n"' dependency-check-report.json | head -100
+              exit 1
+            fi
+            
+            echo "Aucune vulnérabilité critique ou haute détectée"
+          else
+            echo "AVERTISSEMENT: Rapport Dependency-Check non trouvé"
           fi
 
-      - name: Upload résultats
+      - name: Upload rapport HTML
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sca-npm-audit-results
-          path: npm-audit.json
+          name: dependency-check-report-html
+          path: dependency-check-report.html
+
+      - name: Upload rapport JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report-json
+          path: dependency-check-report.json
+
+      - name: Upload rapport XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report-xml
+          path: dependency-check-report.xml

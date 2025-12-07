@@ -33,8 +33,65 @@ jobs:
           name: coverage-report
           path: coverage/
 
-  sast-snyk-code:
-    name: SAST - Snyk Code
+  sast-semgrep:
+    name: SAST - Semgrep
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    container:
+      image: semgrep/semgrep
+    
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Scan Semgrep avec règles de sécurité
+        run: |
+          semgrep scan --config=auto \
+            --config=p/security-audit \
+            --config=p/owasp-top-ten \
+            --config=p/javascript \
+            --json --output=semgrep-results.json \
+            src/ || true
+
+      - name: Scan Semgrep avec affichage
+        run: |
+          semgrep scan --config=auto \
+            --config=p/security-audit \
+            --config=p/owasp-top-ten \
+            --config=p/javascript \
+            --severity=ERROR \
+            src/ || true
+
+      - name: Analyse des résultats
+        run: |
+          if [ -f semgrep-results.json ]; then
+            CRITICAL=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' semgrep-results.json)
+            HIGH=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' semgrep-results.json)
+            
+            echo "Semgrep SAST - Vulnérabilités CRITIQUES: $CRITICAL"
+            echo "Semgrep SAST - Vulnérabilités HAUTE: $HIGH"
+            
+            if [ "$CRITICAL" -gt 0 ]; then
+              echo ""
+              echo "ÉCHEC: Vulnérabilités critiques détectées"
+              echo ""
+              jq -r '.results[] | select(.extra.severity == "ERROR") | "[\(.extra.severity)] \(.check_id)\n  Message: \(.extra.message)\n  Fichier: \(.path):\(.start.line)\n"' semgrep-results.json
+              exit 1
+            fi
+          else
+            echo "ERREUR: Résultats Semgrep non trouvés"
+            exit 1
+          fi
+
+      - name: Upload résultats SAST
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-semgrep-results
+          path: semgrep-results.json
+
+  sast-horusec:
+    name: SAST - Horusec
     runs-on: ubuntu-latest
     needs: build-and-test
     
@@ -42,49 +99,49 @@ jobs:
       - name: Checkout du code
         uses: actions/checkout@v4
 
-      - name: Installation de Snyk CLI
-        run: npm install -g snyk
-
-      - name: Authentification Snyk
-        run: snyk auth ${{ secrets.SNYK_TOKEN }}
-
-      - name: Scan SAST avec Snyk Code
+      - name: Scan Horusec
         run: |
-          snyk code test --json > snyk-code-results.json || true
-          snyk code test --severity-threshold=high || SNYK_EXIT_CODE=$?
-          
-          if [ ! -z "$SNYK_EXIT_CODE" ] && [ "$SNYK_EXIT_CODE" -ne 0 ]; then
-            echo "ÉCHEC: Vulnérabilités détectées par Snyk Code"
-            exit 1
-          fi
+          docker run --rm \
+            -v $(pwd):/src \
+            horuszup/horusec-cli:latest horusec start \
+            -p /src \
+            -o json \
+            -O /src/horusec-results.json || true
 
-      - name: Analyse des résultats Snyk Code
-        if: always()
+      - name: Affichage des résultats Horusec
         run: |
-          if [ -f snyk-code-results.json ]; then
-            echo "Analyse des résultats Snyk Code"
+          docker run --rm \
+            -v $(pwd):/src \
+            horuszup/horusec-cli:latest horusec start \
+            -p /src || true
+
+      - name: Analyse des résultats Horusec
+        run: |
+          if [ -f horusec-results.json ]; then
+            HIGH=$(jq '[.analysisVulnerabilities[] | select(.severity == "HIGH" or .severity == "CRITICAL")] | length' horusec-results.json 2>/dev/null || echo "0")
             
-            HIGH=$(jq '[.runs[0].results[] | select(.level == "error")] | length' snyk-code-results.json 2>/dev/null || echo "0")
-            MEDIUM=$(jq '[.runs[0].results[] | select(.level == "warning")] | length' snyk-code-results.json 2>/dev/null || echo "0")
-            
-            echo "Vulnérabilités HAUTE: $HIGH"
-            echo "Vulnérabilités MOYENNE: $MEDIUM"
+            echo "Horusec SAST - Vulnérabilités HAUTE/CRITIQUES: $HIGH"
             
             if [ "$HIGH" -gt 0 ]; then
-              echo "Détails des vulnérabilités critiques:"
-              jq -r '.runs[0].results[] | select(.level == "error") | "  - \(.message.text) dans \(.locations[0].physicalLocation.artifactLocation.uri)"' snyk-code-results.json 2>/dev/null || echo "Voir les détails dans l'artifact"
+              echo ""
+              echo "ÉCHEC: Vulnérabilités haute/critiques détectées par Horusec"
+              echo ""
+              jq -r '.analysisVulnerabilities[] | select(.severity == "HIGH" or .severity == "CRITICAL") | "[\(.severity)] \(.details)\n  Fichier: \(.file):\(.line)\n"' horusec-results.json || echo "Voir artifact pour détails"
+              exit 1
             fi
+          else
+            echo "Horusec: Aucun résultat ou pas de vulnérabilités"
           fi
 
-      - name: Upload résultats Snyk Code
+      - name: Upload résultats Horusec
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sast-snyk-code-results
-          path: snyk-code-results.json
+          name: sast-horusec-results
+          path: horusec-results.json
 
-  sca-snyk-dependencies:
-    name: SCA - Snyk Open Source
+  sast-bearer:
+    name: SAST - Bearer
     runs-on: ubuntu-latest
     needs: build-and-test
     
@@ -92,37 +149,93 @@ jobs:
       - name: Checkout du code
         uses: actions/checkout@v4
 
-      - name: Configuration Node.js
-        uses: actions/setup-node@v4
+      - name: Scan Bearer
+        uses: bearer/bearer-action@v2
         with:
-          node-version: '18'
-          cache: 'npm'
+          format: json
+          output: bearer-results.json
+          severity: high,critical
+        continue-on-error: true
 
-      - name: Installation des dépendances
-        run: npm ci
-
-      - name: Installation de Snyk CLI
-        run: npm install -g snyk
-
-      - name: Authentification Snyk
-        run: snyk auth ${{ secrets.SNYK_TOKEN }}
-
-      - name: Scan des dépendances avec Snyk
+      - name: Analyse résultats Bearer
+        if: always()
         run: |
-          snyk test --json > snyk-dependencies-results.json || true
-          snyk test --severity-threshold=high || SNYK_EXIT_CODE=$?
-          
-          if [ ! -z "$SNYK_EXIT_CODE" ] && [ "$SNYK_EXIT_CODE" -ne 0 ]; then
-            echo "ÉCHEC: Vulnérabilités dans les dépendances détectées par Snyk"
-            exit 1
+          if [ -f bearer-results.json ]; then
+            CRITICAL=$(jq '[.high_findings[]?, .critical_findings[]?] | length' bearer-results.json 2>/dev/null || echo "0")
+            
+            echo "Bearer SAST - Vulnérabilités CRITIQUE/HAUTE: $CRITICAL"
+            
+            if [ "$CRITICAL" -gt 0 ]; then
+              echo ""
+              echo "ÉCHEC: Vulnérabilités critiques détectées par Bearer"
+              echo ""
+              jq -r '[.high_findings[]?, .critical_findings[]?] | .[] | "[\(.severity)] \(.title)\n  Fichier: \(.filename):\(.line_number)\n"' bearer-results.json 2>/dev/null || echo "Voir artifact pour détails"
+              exit 1
+            fi
+          else
+            echo "Bearer: Aucun résultat"
           fi
 
-      - name: Upload résultats Snyk Dependencies
+      - name: Upload résultats Bearer
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sca-snyk-results
-          path: snyk-dependencies-results.json
+          name: sast-bearer-results
+          path: bearer-results.json
+
+  sca-trivy:
+    name: SCA - Trivy
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Scan Trivy pour vulnérabilités
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'json'
+          output: 'trivy-results.json'
+          severity: 'CRITICAL,HIGH'
+        continue-on-error: true
+
+      - name: Affichage résultats Trivy
+        run: |
+          docker run --rm \
+            -v $(pwd):/workspace \
+            aquasec/trivy:latest fs \
+            --severity CRITICAL,HIGH \
+            /workspace || true
+
+      - name: Analyse résultats Trivy
+        run: |
+          if [ -f trivy-results.json ]; then
+            CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' trivy-results.json 2>/dev/null || echo "0")
+            HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' trivy-results.json 2>/dev/null || echo "0")
+            
+            echo "Trivy SCA - Vulnérabilités CRITIQUES: $CRITICAL"
+            echo "Trivy SCA - Vulnérabilités HAUTE: $HIGH"
+            
+            if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+              echo ""
+              echo "ÉCHEC: Vulnérabilités critiques/haute dans les dépendances"
+              echo ""
+              jq -r '.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL" or .Severity == "HIGH") | "[\(.Severity)] \(.VulnerabilityID): \(.Title)\n  Package: \(.PkgName) \(.InstalledVersion)\n"' trivy-results.json | head -50
+              exit 1
+            fi
+          else
+            echo "Trivy: Aucune vulnérabilité détectée"
+          fi
+
+      - name: Upload résultats Trivy
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sca-trivy-results
+          path: trivy-results.json
 
   sca-npm-audit:
     name: SCA - npm audit
@@ -142,23 +255,30 @@ jobs:
       - name: Installation des dépendances
         run: npm ci
 
-      - name: Audit de sécurité npm
+      - name: Audit npm avec résultats JSON
         run: |
           npm audit --json > npm-audit.json || true
-          npm audit || true
 
-      - name: Vérification vulnérabilités npm
+      - name: Affichage audit npm
+        run: npm audit || true
+
+      - name: Analyse résultats npm audit
         run: |
           CRITICAL=$(jq '.metadata.vulnerabilities.critical // 0' npm-audit.json)
           HIGH=$(jq '.metadata.vulnerabilities.high // 0' npm-audit.json)
           
-          echo "npm audit - Vulnérabilités CRITIQUES: $CRITICAL"
-          echo "npm audit - Vulnérabilités HAUTE: $HIGH"
+          echo "npm audit SCA - Vulnérabilités CRITIQUES: $CRITICAL"
+          echo "npm audit SCA - Vulnérabilités HAUTE: $HIGH"
           
           if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
-            echo "ÉCHEC: Vulnérabilités critiques/haute dans les dépendances"
+            echo ""
+            echo "ÉCHEC: Vulnérabilités critiques/haute dans les dépendances npm"
+            echo ""
+            jq -r '.vulnerabilities | to_entries[] | select(.value.severity == "critical" or .value.severity == "high") | "[\(.value.severity | ascii_upcase)] \(.key)\n  Via: \(.value.via[0].title // .value.via[0])\n"' npm-audit.json | head -50
             exit 1
           fi
+          
+          echo "npm audit: Aucune vulnérabilité critique"
 
       - name: Upload résultats npm audit
         if: always()
@@ -166,3 +286,47 @@ jobs:
         with:
           name: sca-npm-audit-results
           path: npm-audit.json
+
+  sca-osv-scanner:
+    name: SCA - OSV Scanner
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Scan OSV
+        uses: google/osv-scanner-action@v1
+        with:
+          scan-args: |-
+            --format=json
+            --output=osv-results.json
+            ./
+        continue-on-error: true
+
+      - name: Analyse résultats OSV
+        if: always()
+        run: |
+          if [ -f osv-results.json ]; then
+            VULNS=$(jq '[.results[]?.packages[]?.vulnerabilities[]?] | length' osv-results.json 2>/dev/null || echo "0")
+            
+            echo "OSV Scanner SCA - Vulnérabilités détectées: $VULNS"
+            
+            if [ "$VULNS" -gt 0 ]; then
+              echo ""
+              echo "ÉCHEC: Vulnérabilités détectées par OSV Scanner"
+              echo ""
+              jq -r '.results[]?.packages[]? | select(.vulnerabilities) | .package.name as $pkg | .vulnerabilities[] | "[\(.database_specific.severity // "HIGH")] \(.id)\n  Package: \($pkg)\n  Summary: \(.summary)\n"' osv-results.json | head -50
+              exit 1
+            fi
+          else
+            echo "OSV Scanner: Aucune vulnérabilité détectée"
+          fi
+
+      - name: Upload résultats OSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sca-osv-results
+          path: osv-results.json

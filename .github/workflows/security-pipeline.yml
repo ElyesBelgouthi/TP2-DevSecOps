@@ -170,3 +170,48 @@ jobs:
         with:
           name: sca-npm-audit-results
           path: npm-audit.json
+
+  dast-owasp-zap:
+    name: DAST - OWASP ZAP
+    runs-on: ubuntu-latest
+    needs: [sast-semgrep, sca-npm-audit]
+    
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Configuration Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Installation et démarrage application
+        run: |
+          npm ci
+          npm start &
+          APP_PID=$!
+          echo "APP_PID=$APP_PID" >> $GITHUB_ENV
+          sleep 15
+
+      - name: Vérification disponibilité
+        run: curl -f http://localhost:3000 || exit 1
+
+      - name: Scan OWASP ZAP
+        uses: zaproxy/action-baseline@v0.10.0
+        with:
+          target: 'http://localhost:3000'
+          fail_action: true
+
+      - name: Arrêt application
+        if: always()
+        run: kill $APP_PID || true
+
+      - name: Upload résultats DAST
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-results
+          path: |
+            report_html.html
+            report_json.json

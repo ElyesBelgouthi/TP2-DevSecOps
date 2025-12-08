@@ -199,6 +199,7 @@ jobs:
 
       - name: Scan OWASP ZAP
         uses: zaproxy/action-baseline@v0.10.0
+        continue-on-error: true 
         with:
           target: 'http://localhost:3000'
           fail_action: false

@@ -28,6 +28,20 @@ describe('Tests API', () => {
     expect(response.headers['cache-control']).toContain('no-store');
   });
 
+  test('Vérifie les attributs des cookies CSRF', async () => {
+    const response = await request(app).get('/');
+    
+    const cookies = response.headers['set-cookie'];
+    expect(cookies).toBeDefined();
+    
+    const csrfCookie = cookies.find(cookie => cookie.startsWith('_csrf='));
+    expect(csrfCookie).toBeDefined();
+    
+    expect(csrfCookie).toContain('HttpOnly');
+    
+    expect(csrfCookie).toContain('SameSite=Strict');
+  });
+
   test('Route non trouvée retourne 404', async () => {
     const response = await request(app).get('/route-inexistante');
     expect(response.statusCode).toBe(404);

@@ -62,8 +62,14 @@ app.use((req, res, next) => {
 app.use(cookieParser());
 app.use(express.json());
 
-// Protection CSRF
-const csrfProtection = csrf({ cookie: true });
+// Protection CSRF avec options de cookies sécurisées
+const csrfProtection = csrf({ 
+  cookie: {
+    httpOnly: true,      // Empêche l'accès JavaScript au cookie
+    secure: process.env.NODE_ENV === 'production', // HTTPS uniquement en production
+    sameSite: 'strict'   // Protection CSRF stricte
+  }
+});
 
 app.get('/', csrfProtection, (req, res) => {
   res.json({ 
@@ -79,10 +85,14 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Route non trouvée' });
 });
 
-// Gestion des erreurs
+// Gestion des erreurs CSRF
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Erreur serveur' });
+  if (err.code === 'EBADCSRFTOKEN') {
+    res.status(403).json({ error: 'Token CSRF invalide' });
+  } else {
+    console.error(err.stack);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 if (require.main === module) {
